@@ -4,13 +4,14 @@ version = "0.1.0"
 description = "Incrementality testing and evaluation harness for pulse and holdout experiments"
 readme = "README.md"
 license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
-    { name = "jeffreyparks", email = "jeff@accolade.digital" }
+    { name = "jeffreyparks", email = "jeff@arjentic.ai" }
 ]
 requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.0",
-    "pandas>=2.2",
+    "pandas>=3.0",
 ]
 
 [build-system]

@@ -77,8 +77,6 @@ def _place_windows(
         raise ValueError("n_windows * window_duration_buckets too large for n_days")
 
     gap = (usable_span - total_window_buckets) // (n_windows + 1)
-    if gap < window_duration_buckets:
-        raise ValueError("windows too close together; increase n_days or reduce n_windows")
 
     rows = []
     cursor = edge_buffer + gap
