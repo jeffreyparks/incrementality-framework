@@ -1,3 +1,8 @@
+# Agents
+CLAUDE.md
+.claude/
+.AGENTS/
+
 # Python
 __pycache__/
 *.py[cod]
