@@ -1,0 +1,10 @@
+{
+  "gitAttribution": false,
+  "permissions": {
+    "allow": [
+      "Bash(uv sync:*)", "Bash(uv run:*)", "Bash(uv lock:*)", "Bash(uv build:*)", 
+      "Bash(uv python:*)", "Bash(uv tree:*)", "Bash(git status:*)", "Bash(git diff:*)", 
+      "Bash(git log:*)", "Bash(git add:*)", "Bash(git branch:*)", "Bash(git show:*)"
+    ]
+  }
+}
