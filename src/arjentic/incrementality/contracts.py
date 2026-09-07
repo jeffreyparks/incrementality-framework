@@ -62,6 +62,25 @@ class TreatmentWindows(pa.DataFrameModel):
         return df["end"] > df["start"]
 
 
+class Role:
+    """What a bucket is used for, assigned once by `estimate.label_roles`.
+
+    Lives here rather than with the estimator because diagnostics filters on
+    roles too. Later roles -- donors, backtest folds -- are new members, not
+    new plumbing.
+
+    Plain string constants rather than an Enum on purpose. Under pandas 3.0 a
+    `str`-subclass Enum member does not compare equal to values in a `str`
+    dtype column, so `frame["role"] == Role.WINDOW` would match nothing and
+    silently yield an empty selection. These are the strings themselves, and a
+    mistyped attribute raises immediately instead.
+    """
+
+    BASELINE = "baseline"
+    WINDOW = "window"
+    WASHOUT = "washout"
+
+
 class BaselineState(str, Enum):
     """Whether the baseline (untreated-by-construction) period had treatment on.
 
@@ -109,6 +128,14 @@ class EstimateResult:
     mean_of_ratios_lift: float
     ci_lower: float
     ci_upper: float
+    ci_method: str
+    """Which procedure produced the interval, and so what it measures.
+
+    `"bootstrap"` resamples whole windows and brackets `pooled_lift`, capturing
+    between-window variation. `"forecast"` is the single-window fallback and
+    captures forecast uncertainty instead. The two are not comparable.
+    """
+
     model_name: str
     config: RunConfig
 

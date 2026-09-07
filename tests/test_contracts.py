@@ -273,6 +273,7 @@ def test_estimate_result_comparison_does_not_raise_on_its_frame() -> None:
         mean_of_ratios_lift=0.2,
         ci_lower=0.1,
         ci_upper=0.3,
+        ci_method="bootstrap",
         model_name="naive",
         config=config,
     )
