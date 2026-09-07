@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from arjentic.incrementality.models.base import Z, forecast_frame
+from arjentic.incrementality.models.base import Z, forecast_frame, require_sorted
 
 _MIN_OBSERVATIONS_PER_KEY = 2
 
@@ -25,7 +25,10 @@ class SeasonalMean:
         self._count = grouped.count()
 
     def predict(self, timestamps: pd.Series) -> pd.DataFrame:
-        keys = _seasonal_key(timestamps)
+        # This backend is order-independent, but the protocol's precondition is
+        # enforced anyway so a violation fails identically on every backend.
+        requested = require_sorted(timestamps)
+        keys = _seasonal_key(requested)
         counts = keys.map(self._count).fillna(0)
 
         # Substituting a global mean for an unobserved slot would return a
@@ -41,7 +44,7 @@ class SeasonalMean:
 
         expected = keys.map(self._mean).to_numpy()
         spread = Z * keys.map(self._std).to_numpy()
-        return forecast_frame(timestamps, expected, expected - spread, expected + spread)
+        return forecast_frame(requested, expected, expected - spread, expected + spread)
 
 
 def _seasonal_key(timestamps: pd.Series) -> pd.Series:

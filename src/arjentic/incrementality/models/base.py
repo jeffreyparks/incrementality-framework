@@ -55,8 +55,29 @@ class Forecaster(Protocol):
         ...
 
     def predict(self, timestamps: pd.Series) -> pd.DataFrame:
-        """Return a `Forecast`-shaped frame, one row per requested timestamp."""
+        """Return a `Forecast`-shaped frame, one row per requested timestamp.
+
+        `timestamps` must be sorted ascending. Backends may rely on that, so
+        call `require_sorted()` rather than assuming it silently.
+        """
         ...
+
+
+def require_sorted(timestamps: pd.Series) -> pd.Series:
+    """Enforce the ascending-order precondition and normalize the index.
+
+    Sorted order is guaranteed upstream by `contracts.validate()`, and some
+    backends align their output positionally because of it. Enforcing it here
+    keeps that a stated invariant rather than an accident, and makes every
+    backend fail the same way when it is violated. Duplicates are allowed.
+    """
+    requested = pd.Series(timestamps).reset_index(drop=True)
+    if not requested.is_monotonic_increasing:
+        raise ValueError(
+            "timestamps must be sorted ascending; contracts.validate() returns "
+            "observations in that order, so slice the request from a validated frame"
+        )
+    return requested
 
 
 def forecast_frame(

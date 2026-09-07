@@ -12,9 +12,11 @@ from typing import Any
 
 from arjentic.incrementality.models.base import Forecaster
 from arjentic.incrementality.models.naive import SeasonalMean
+from arjentic.incrementality.models.prophet import ProphetForecaster
 
 REGISTRY: dict[str, type[Forecaster]] = {
     "naive": SeasonalMean,
+    "prophet": ProphetForecaster,
 }
 
 
