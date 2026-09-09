@@ -1,34 +1,58 @@
 # ---
 # jupyter:
 #   jupytext:
+#     formats: ipynb,py:percent
 #     text_representation:
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
+#       jupytext_version: 1.19.5
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: arjentic-incrementality (3.13.3)
 #     language: python
 #     name: python3
 # ---
 
 # %% [markdown]
-# # Single-unit incrementality walkthrough
+# # A single-unit incrementality demo
 #
-# One treated unit, several treatment windows, start to finish: generate a dataset
-# with a known effect, estimate the lift, check the model, then translate the result
-# into a media-buying number.
+# For one treated unit with a handful of treatment windows. We'll build a synthetic 
+# dataset with a treatment effect we've planted ourselves — so we know the right 
+# answer going in — estimate that effect back out with a counterfactual model, 
+# put the model through a backtest to see whether it's earned our trust, and 
+# finish by turning the estimate into the number that actually belongs in a media 
+# plan: cost per *incremental* click.
 #
-# **The method.** A counterfactual model is fit on the *untreated* buckets of a time
-# series and used to predict what the metric would have been inside each declared
-# treatment window. The gap between what happened and that prediction is the
-# incremental effect. Window-level ratios are aggregated, and resampling those
-# windows gives an interval.
+# **The method** Fit a forecasting model on the periods where
+# nothing was happening — the *baseline* — and ask it to predict what would have
+# happened during the treatment windows if nothing had changed. The gap between that
+# prediction and what actually happened is the incremental effect. Do this per
+# window, aggregate across windows, and resample the windows to get a sense of how
+# much the answer could plausibly have varied.
 #
-# **Why the data is synthetic.** The effect here is *planted*, so there is a known
-# answer to check against. On live data there is none — you can only ever ask whether
-# the model predicts untreated periods well, which is what the diagnostics section
-# does. Validating the harness against a plausible-looking answer would prove nothing,
-# so it is validated against a known one.
+# ### A quick glossary
+#
+# A handful of terms carry specific meaning throughout this notebook — worth having
+# straight before the code starts flying.
+#
+# - **Unit** — the single thing being measured. Here, one paid-media channel.
+# - **Bucket** — one row of the time series: one hour of data, in this case. The
+#   contract works at whatever granularity you hand it; this notebook happens to use
+#   hourly buckets.
+# - **Metric** — the number being measured in each bucket. Clicks, here.
+# - **Treatment window** (or just **window**) — a declared span of buckets during
+#   which the treatment was active — a media burst switched on, a promo running, a
+#   channel paused, depending on the design.
+# - **Baseline** — every bucket that isn't inside a window or its washout. This is
+#   what the forecasting model trains on.
+# - **Washout** — a buffer of buckets immediately before and after a window, excluded
+#   from both fitting and scoring because carryover effects make them neither cleanly
+#   treated nor cleanly untreated.
+# - **Counterfactual** — what the model predicts *would* have happened inside a
+#   window if nothing had changed. The thing we can never actually observe, and the
+#   entire reason this method exists.
+# - **Lift** — the estimated effect: actual minus counterfactual, expressed as a
+#   ratio and sign-resolved so a positive number always means the treatment helped.
 
 # %%
 # On Colab only: install the published package. Locally, `uv sync` has already done it.
@@ -62,7 +86,7 @@ import dataclasses
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-import matplotlib.transforms as transforms
+from matplotlib import transforms
 import pandas as pd
 
 from arjentic.incrementality import BaselineState, RunConfig, generate, run
@@ -75,6 +99,7 @@ pd.set_option("display.float_format", "{:,.4f}".format)
 
 # %%
 # Chart styling. One place, so every figure reads as part of the same set.
+# # ! todo: move into a config file
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 SECONDARY = "#52514e"
@@ -125,11 +150,12 @@ def style(ax, title=None, ylabel=None):
 
 
 # %% [markdown]
-# ## 1. The dataset
+# ## 1. Generate the dataset
 #
-# Hourly buckets over 90 days: a trend, weekly and daily seasonality, multiplicative
-# noise, and a **20% effect planted inside four scattered treatment windows**. Read it
-# as clicks on a paid-media channel that was switched on for four short bursts.
+# Picture a paid-media channel that ran four short bursts over a 90-day stretch —
+# hourly click data, the usual weekly and daily rhythm, some noise, and a trend
+# drifting underneath it all. Inside those four bursts we've baked in a **20% lift**,
+# on purpose, so there's a right answer to check the method against later.
 
 # %%
 df, windows, truth = generate()
@@ -140,10 +166,12 @@ print(f"planted effect: {truth['effect_size']:+.0%}")
 windows
 
 # %% [markdown]
-# The data contract is enforced before anything else touches it — dtypes, nulls,
-# duplicate buckets, regular spacing, timezone-awareness, and that every declared
-# window actually covers observations. It returns both frames sorted into canonical
-# order, which is what lets everything downstream count buckets positionally.
+# Before any of that data gets near a model, it passes through a contract check —
+# dtypes, nulls, duplicate timestamps, regular spacing, timezone-awareness, and a
+# check that every declared window actually falls inside the observed range. It's a
+# strict, unglamorous gate, and that's the point: everything downstream gets to
+# assume the data is well-formed and sorted, instead of defending against it at every
+# step.
 
 # %%
 observations, treatment_windows = validate(df, windows)
@@ -177,31 +205,34 @@ style(ax, "Observed clicks, with treatment windows marked", "clicks per hour")
 fig.tight_layout()
 
 # %% [markdown]
-# The windows are only hours long against 90 days of data, so the effect is invisible
-# at this zoom. That is the normal condition — it is why the estimate needs a model
-# rather than an eyeball.
+# Squint all you like — you won't find the treatment effect in that chart. Six-hour
+# windows against ninety days of hourly data are a needle in a haystack, and that's
+# the normal case here, not a contrived one. It's exactly why this needs a model
+# instead of an eyeball: nobody is spotting a 20% bump by staring at a line chart.
 
 # %% [markdown]
-# ## 2. The experiment, declared up front
+# ## 2. Set up and run the experiment
 #
-# Every choice that shapes the answer is stated before the answer is computed, and the
-# result carries this object so a run describes itself.
+# Two choices in the config below quietly decide the sign and the honesty of
+# everything that follows, so they're worth pausing on rather than skimming past.
 #
-# Two fields do the most work:
+# **`baseline_state`** answers a simple but easy-to-flub question: was the treatment
+# *on* or *off* outside the windows? Here the media only ran inside the four bursts,
+# so the baseline is `UNTREATED`. This one setting fixes the sign of the entire
+# estimate — get it backwards and you'll report a channel *hurting* performance when
+# it's helping, and the output will still look completely plausible. We declare it
+# rather than infer it for exactly that reason.
 #
-# - **`baseline_state`** — was the treatment *on* or *off* during the baseline period?
-#   Here the media ran only inside the windows, so the baseline is `UNTREATED`. This
-#   determines the sign of the estimate, so it is declared rather than inferred.
-#   A positive result always means the treatment increased the metric.
-# - **`washout_before` / `washout_after`** — buckets adjacent to each window are
-#   discarded from both the fit and the score, because carryover means they are
-#   neither cleanly treated nor cleanly untreated. There is deliberately no default;
-#   an unstated washout is a modelling assumption made by accident.
+# **`washout_before` / `washout_after`** carve out a buffer of buckets on either side
+# of every window, discarded from both fitting and scoring. Carryover means those
+# buckets are neither cleanly treated nor cleanly untreated, so counting them either
+# way would quietly bias the result. There's no default here on purpose — an
+# unstated washout is an assumption made by accident, and this method doesn't let you
+# make it by accident.
 
 # %%
 # Model parameters belong to the backend that reads them, so they are declared per
-# backend rather than shared. Prophet's seasonality is pinned explicitly instead of
-# left to its own detection, which depends on how long the series happens to be.
+# backend rather than shared. Prophet's seasonality is pinned explicitly.
 MODEL_PARAMS = {
     "prophet": {"daily_seasonality": True, "weekly_seasonality": True},
     "naive": {},
@@ -215,7 +246,7 @@ config = RunConfig(
     primary_model="prophet",
     model_params=MODEL_PARAMS["prophet"],
     backtest_holdout_buckets=168,
-    bootstrap_seed=20260907,
+    bootstrap_seed=42,
     bootstrap_resamples=2000,
 )
 
@@ -230,9 +261,10 @@ def config_for(model_name):
 config
 
 # %% [markdown]
-# Washout is resolved once, upstream, into a role per bucket. Nothing downstream needs
-# to know washout exists — the model fits `baseline`, the estimator scores `window`,
-# and `washout` is simply never selected.
+# Notice that washout only gets handled once — every bucket gets tagged with a role
+# up front, and everything downstream just filters on it. The model fits on
+# `baseline`, the estimator scores `window`, and `washout` buckets are simply never
+# selected by either step. Nobody downstream has to remember washout exists.
 
 # %%
 labeled = label_roles(
@@ -244,16 +276,17 @@ labeled = label_roles(
 labeled["role"].value_counts().rename("buckets").to_frame()
 
 # %% [markdown]
-# ## 3. The estimate
+# ## 3. Results
 
 # %%
 result = run(df, windows, config)
 result.per_window
 
 # %% [markdown]
-# `actual` and `counterfactual` are summed over each window's buckets before dividing,
-# rather than averaging per-bucket ratios, which would be unstable wherever the
-# counterfactual is small.
+# Notice that `actual` and `counterfactual` are summed across each window's buckets
+# *before* we divide. That's not incidental — averaging per-bucket ratios instead
+# would get noisy fast anywhere the counterfactual dips close to zero, since you'd be
+# dividing by small, jittery numbers one bucket at a time.
 
 # %%
 print(f"planted effect        : {truth['effect_size']:+.2%}")
@@ -265,17 +298,19 @@ print(f"interval from         : {result.ci_method}")
 print(f"model                 : {result.model_name}")
 
 # %% [markdown]
-# **Pooled** weights each window by its volume; **mean-of-ratios** weights each window
-# equally. Both are reported and neither is flagged as correct — a wide gap between
-# them means the windows disagree, and that is something to look at rather than
-# something to resolve automatically. The interval brackets the pooled figure, since
-# that is the volume-weighted quantity the media translation below depends on.
+# Two numbers, two different questions. **Pooled** weights each window by its
+# volume, so a big burst counts for more than a small one — it's the number that
+# matches how the media budget was actually spent. **Mean-of-ratios** treats every
+# window as one vote, regardless of size. Neither is "more correct"; report both, and
+# if they disagree by a wide margin, that's a signal worth chasing down rather than
+# averaging away. The confidence interval below tracks the pooled figure, since
+# that's the quantity the cost-per-click math further down actually depends on.
 
 # %%
 fig, ax = plt.subplots(figsize=(11, 3.6))
 per_window = result.per_window
 
-ax.axvspan(
+ax.axhspan(
     result.ci_lower,
     result.ci_upper,
     color=ACTUAL,
@@ -283,8 +318,8 @@ ax.axvspan(
     linewidth=0,
     label="95% interval (pooled)",
 )
-ax.axvline(result.pooled_lift, color=ACTUAL, linewidth=1.6, label="pooled lift")
-ax.axvline(
+ax.axhline(result.pooled_lift, color=ACTUAL, linewidth=1.6, label="pooled lift")
+ax.axhline(
     truth["effect_size"],
     color=INK,
     linewidth=1.2,
@@ -292,8 +327,8 @@ ax.axvline(
     label="planted effect",
 )
 ax.scatter(
-    per_window["lift"],
     per_window["window_id"],
+    per_window["lift"],
     s=70,
     color=COUNTERFACTUAL,
     zorder=3,
@@ -302,30 +337,29 @@ ax.scatter(
     label="per-window lift",
 )
 
-ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=1, decimals=0))
-ax.invert_yaxis()
-ax.margins(x=0.10, y=0.28)
+ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1, decimals=0))
+ax.margins(x=0.15, y=0.20)
 # Below the axis, not inside it: the per-window points reach both edges.
 ax.legend(
     loc="upper center",
-    bbox_to_anchor=(0.5, -0.28),
+    bbox_to_anchor=(0.5, -0.22),
     ncols=4,
     labelcolor=SECONDARY,
     handletextpad=0.6,
     columnspacing=1.6,
 )
-style(ax, "Lift by window against the pooled estimate", None)
-ax.set_xlabel("lift")
+style(ax, "Lift by window against the pooled estimate", "lift")
 fig.tight_layout()
 
 # %% [markdown]
-# ### What the model actually predicted
-#
-# Zooming into one window shows the mechanism: the counterfactual and its prediction
-# interval are what the model expected absent treatment, and the gap above it is the
-# incremental volume being counted.
+# Here's one window zoomed in: the dashed line and shaded band are what the model 
+# expected to see if nothing had changed, and the actual line climbing above them 
+# during the shaded window is the incremental volume this whole exercise is trying 
+# to measure.
 
 # %%
+# todo: adapt for dashboard, allow interactive selection of windows
+
 window = treatment_windows.iloc[1]
 scored = labeled[labeled["window_id"] == window["window_id"]]
 
@@ -363,18 +397,26 @@ style(ax, f"Window {window['window_id']}: actual against counterfactual", "click
 fig.tight_layout()
 
 # %% [markdown]
-# ## 4. Checking the model, separately from the estimate
+# ## 4. Validate the Counterfactual model
 #
-# The estimate rests entirely on the counterfactual being credible. The backtest holds
-# out a contiguous slice of *baseline* buckets, refits without them, and scores the
-# prediction — the only check available on live data, where nothing is planted.
+# Everything above rests on one assumption: that the counterfactual is credible. So
+# before we lean on it, let's test it — hold out a chunk of *baseline* buckets the
+# model has never seen, refit without them, and check how well it predicts them back.
+# On live data, with no planted answer to check against, this is the only validation
+# you get.
 #
-# The slice comes from the **middle** rather than the end. The estimator fits on
-# baseline either side of each window and predicts the gap between, so it interpolates;
-# a tail holdout would measure extrapolation and understate the model at a task it
-# never performs.
+# One detail matters more than it looks like it should: the holdout comes from the
+# **middle** of the baseline, not the tail. The estimator always fits baseline on
+# both sides of a window and predicts the gap in between — it interpolates. A holdout
+# at the end of the series would test *extrapolation* instead, a strictly harder task
+# the model is never actually asked to perform, and the backtest would unfairly make
+# it look worse than it is.
 
 # %%
+# todo: validate backtest method
+# todo: validate bias and handling
+# todo: visualize the backtest, display results in dashboard
+
 rows = []
 for model_name in ("naive", "prophet"):
     diagnostic = backtest(df, windows, config_for(model_name))
@@ -391,20 +433,24 @@ for model_name in ("naive", "prophet"):
 pd.DataFrame(rows).set_index("model")
 
 # %% [markdown]
-# Three numbers, three different jobs:
+# Three numbers come out of this, and each is answering a different question.
 #
-# - **Coverage** against nominal says whether the prediction interval is honest. It
-#   matters most for single-window designs, whose reported interval is derived from
-#   these bounds directly.
-# - **MAE** is the size of the typical error.
-# - **Relative bias** is the one that maps onto the answer. A counterfactual running
-#   low by 2% inflates the lift estimate by roughly 2 percentage points, near enough
-#   one-for-one. MAE cannot distinguish that from harmless symmetric noise, which
-#   averages out over a window — so bias is reported next to it rather than folded in.
+# - **Coverage**, checked against the nominal 95%, tells you whether the prediction
+#   interval is telling the truth. This matters most for single-window designs, where
+#   the reported confidence interval is built directly from these same bounds.
+# - **MAE** is just the size of a typical miss — useful, but it can't tell you *which
+#   direction* the model tends to be wrong.
+# - **Relative bias** is the one to actually worry about, because it's the one that
+#   bleeds straight into the answer. A counterfactual running 2% low inflates the
+#   lift estimate by roughly 2 points — nearly one-for-one. MAE can't tell that apart
+#   from harmless symmetric noise, which mostly cancels out across a window. Bias is
+#   why we report it separately instead of letting MAE speak for both.
 #
-# `naive` is a day-of-week × hour-of-day mean. It exists partly to keep the model
-# interface honest and partly as a sanity comparator: if a sophisticated backend cannot
-# beat a groupby, that is worth knowing before it is quoted to anyone.
+# A word on `naive`: it's nothing more than a day-of-week × hour-of-day average. It's
+# here partly to keep the model interface honest — if the naive backend can't plug
+# into the same protocol as Prophet, the abstraction is wrong — and partly as a gut
+# check. If a fancier model can't beat a groupby, that's worth knowing before you put
+# it in front of a client.
 
 # %%
 comparison = []
@@ -422,23 +468,26 @@ for model_name in ("naive", "prophet"):
 pd.DataFrame(comparison).set_index("model")
 
 # %% [markdown]
-# Two methods with almost nothing in common landing on the same answer is the strongest
-# evidence available that the pipeline produced it, rather than one model's quirk.
-# Prophet's interval is the wider of the two — its per-window counterfactuals disagree
-# with each other more, and resampling windows is what surfaces that.
+# Two models that share almost no machinery landing on roughly the same answer is
+# about as reassuring as this kind of check gets — it's evidence the *pipeline* found
+# the effect, not that one model happened to hallucinate it. Prophet's interval comes
+# out wider, and that's honest: its per-window counterfactuals disagree with each
+# other more than the naive model's do, and resampling across windows is exactly what
+# surfaces that disagreement.
 
 # %% [markdown]
-# ## 5. Translating into a media number
+# ## 5. Business Impacts
 #
-# This section is presentation, not framework. It stays in the notebook because the
-# right business metric differs per client, and burying an assumption like the spend
-# figure inside a library is how it stops getting questioned.
-#
-# Suppose the four bursts cost **$18,000** in media. The platform would report a cost
-# per click against *every* click recorded while the campaign ran. Most of those clicks
-# would have happened anyway — that is exactly what the counterfactual estimates.
+# Say the four bursts cost **$18,000** in media. Whatever platform ran that spend will
+# happily hand you a cost-per-click calculated against *every* click that occurred
+# while the campaign was live — and most of those clicks would have shown up anyway,
+# with or without the spend. That "would have shown up anyway" volume is precisely
+# what the counterfactual has been estimating this whole time.
 
 # %%
+# todo: check this reasoning
+# todo: make interactive on dashboard
+
 MEDIA_SPEND = 18_000.0
 
 clicks_during = result.per_window["actual"].sum()
@@ -464,38 +513,49 @@ print()
 print(f"reported CPC understates cost per incremental click by {effective_cpc / reported_cpc:.1f}x")
 
 # %% [markdown]
-# That multiple is the whole argument for running the test. Judged on reported CPC the
-# channel looks several times more efficient than it is, because the denominator counts
-# clicks the business would have received for free. The effective figure is the one to
-# compare against a margin or a target cost per acquisition.
+# That multiple is the entire argument for running a test like this in the first
+# place. Judged on reported CPC, the channel looks several times more efficient than
+# it really is, because the denominator is stuffed with clicks the business was
+# getting for free anyway. The effective CPC is the number to hold up against a
+# margin or a target acquisition cost — the reported one will just get you a nicer
+# story.
 
 # %% [markdown]
-# ## 6. How to read this, and where it stops
+# ## 6. Notes
 #
-# **The interval is optimistic.** Measured across window counts from 2 to 12, the
-# percentile bootstrap contained the true effect 73–87% of the time against a nominal
-# 95%, and more windows did not fix it — the interval narrows roughly with the square
-# root of the window count while systematic forecast misfit does not shrink. With only
-# two windows it can collapse to almost nothing. Read these bounds as indicative, and
-# treat a result whose interval barely excludes zero as unresolved.
+# No method write-up is complete without an honest look at where it bends. Here's
+# where this one does.
 #
-# **A single short window is fragile.** Holding a design fixed and moving only *where*
-# one 6-hour window falls moved the error from +8.1 to −6.0 percentage points, with
-# barely a point of scatter within each position. That is local seasonality misfit, not
-# noise, and one short window has nothing to average it against. Several scattered
-# windows is not a nicety; it is what makes the estimate trustworthy. Single-window
-# designs are supported, and their interval comes from forecast uncertainty rather than
-# resampling — the `ci_method` field says which you got.
+# **The interval runs a bit optimistic.** We measured this directly: across window
+# counts from 2 to 12, the percentile bootstrap contained the true effect somewhere
+# between 73% and 87% of the time, against a nominal 95%. More windows didn't fix
+# it — the interval narrows roughly with the square root of the window count, while
+# the systematic forecast misfit underneath it doesn't shrink at all. With only two
+# windows, it can collapse to almost nothing. Treat these bounds as a useful
+# approximation rather than a courtroom-grade confidence interval, and be suspicious
+# of any result whose interval barely edges past zero.
 #
-# **Passing the backtest validates the forecast, not the causal claim.** The backtest
-# only ever asks whether untreated buckets can be predicted. It cannot see a promotion,
-# a price change, or a competitor's outage that happened to coincide with a window,
-# because the counterfactual under treatment is unobservable by construction. That gap
-# is closed by experimental design — windows placed to be uncorrelated with everything
-# else — and never by a diagnostic.
+# **A single short window is fragile in a way that's easy to miss.** We held the
+# whole design fixed and moved just *where* one six-hour window landed — nothing
+# else — and watched the error swing from +8.1 to −6.0 percentage points, with barely
+# a point of scatter within any one position. That's local seasonality the model is
+# misreading, not noise, and a single short window has nothing else to average it
+# against. Several scattered windows aren't a nice-to-have here; they're what makes
+# the estimate trustworthy at all. Single-window designs are still fully supported —
+# the interval just comes from forecast uncertainty instead of resampling, and the
+# `ci_method` field on the result tells you which one you got.
 #
-# **What this walkthrough does not cover:** donor units and multi-unit designs, geo
-# holdouts, placebo tests, and the data-quality work that live data always needs. The
-# contract here assumes clean input and enforces only structure; field data commonly
-# arrives with gaps, duplicated rows from an upstream join, and timezone-naive
-# timestamps that quietly mean local time.
+# **Passing the backtest validates the forecast, not the causal claim.** This one is
+# worth sitting with. The backtest only ever checks whether the model can predict
+# *untreated* buckets — it has no way to see a promotion, a price change, or a
+# competitor's outage that happened to land inside a treatment window, because the
+# counterfactual *under* treatment is unobservable by definition. Closing that gap is
+# a job for experimental design — placing windows so they're uncorrelated with
+# everything else going on — and no diagnostic will ever do it for you.
+#
+# **What this notebook deliberately leaves out:** donor units and multi-unit designs,
+# geo holdouts, placebo tests, and the data-cleaning work that real-world data always
+# demands. The contract here assumes clean input and only enforces structure. Field
+# data tends to show up with gaps, duplicated rows from an upstream join gone
+# sideways, and timezone-naive timestamps that quietly mean local time — none of
+# which this walkthrough tries to solve.
