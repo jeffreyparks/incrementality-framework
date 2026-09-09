@@ -33,20 +33,31 @@ Two design decisions:
   labeled as washout up front and excluded from both fitting and scoring, with
   no silent zero default.
 
-## Status
+## v0.1
 
-Early — v0.1 is under construction and covers a single treated unit with
-multiple treatment windows. What exists today:
+A single treated unit, multiple treatment windows, backtest validation only. 
 
-- `arjentic.incrementality.data.synthetic` — the flagship synthetic dataset: an
-  hourly series with trend, weekly and daily seasonality, noise, and a known
-  multiplicative effect planted inside declared windows. Because the effect is
-  planted, the harness can be validated against a known answer rather than
-  against a plausible-looking one.
-
-Still to land: the data contract, the model protocol and its Prophet and naive
-backends, the estimation pipeline, backtest diagnostics, and the walkthrough
-notebook.
+- `contracts.py` — the data contract (`Observations`, `TreatmentWindows`,
+  `validate()`), plus `RunConfig`, `BaselineState`, and `EstimateResult`.
+- `models/` — a neutral `Forecaster` protocol and forecast-frame contract, with
+  a naive (seasonal-mean) backend and a Prophet backend behind it.
+- `estimate.py` — `run()`: role labeling (baseline / window / washout), the
+  sign-resolution branch, pooled and mean-of-ratios aggregation, and a
+  percentile bootstrap interval over windows — falling back to a
+  forecast-uncertainty interval for a single-window design, since resampling
+  one window is degenerate.
+- `diagnostics.py` — `backtest()`, a single interior holdout reporting
+  interval coverage, MAE, and bias (MAE alone can't distinguish a biased
+  counterfactual from harmless noise, so both are reported).
+- `data/synthetic.py` — the flagship dataset: an hourly series with trend,
+  weekly and daily seasonality, noise, and a known multiplicative effect
+  planted inside declared windows, so the harness can be checked against a
+  known answer rather than a plausible-looking one.
+- `notebooks/01-single-unit-demo.ipynb` — the end-to-end walkthrough: generate,
+  estimate, backtest, and a business-metric translation.
+- 115 passing tests, including `tests/test_recovery.py` — the harness recovers
+  the planted effect, on both backends, within its reported interval. That
+  test is this project's definition of done.
 
 ## Install
 
@@ -57,20 +68,39 @@ uv sync
 ## Quickstart
 
 ```python
-from arjentic.incrementality.data.synthetic import generate
+from arjentic.incrementality import BaselineState, RunConfig, generate, run
 
 df, windows, truth = generate(effect_size=0.20)
+
+config = RunConfig(
+    unit_id="unit_0",
+    baseline_state=BaselineState.UNTREATED,
+    washout_before=3,
+    washout_after=6,
+    primary_model="prophet",
+    backtest_holdout_buckets=168,
+)
+
+result = run(df, windows, config)
 ```
 
 `df` holds `unit_id`, `timestamp` (UTC) and `value`; `windows` holds
 `window_id`, `start` and `end` as half-open intervals; `truth` carries the
-planted effect so a run can be scored against it.
+planted effect so a run can be scored against it. `result` is self-describing:
+it carries `pooled_lift`, `mean_of_ratios_lift`, a confidence interval with the
+method that produced it (`ci_method`), and the `config` that produced the run.
 
 ## Development
 
 ```sh
 uv sync
 uv run pytest
+```
+
+To regenerate the demo notebook after editing its paired `.py` source:
+
+```sh
+uv run jupytext --to ipynb --execute notebooks/01-single-unit-demo.py
 ```
 
 ## License
