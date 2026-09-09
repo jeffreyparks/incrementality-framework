@@ -1,7 +1,12 @@
 # arjentic-incrementality
 
-A reusable incrementality testing harness for pulse and holdout experiments,
-built on time-series counterfactual forecasting.
+A reusable incrementality testing harness for variety of experiment designs,
+including single and multi-unit holdout, donors and geo-holdout with a range 
+of time-series counterfactual forecasting backends.  
+
+Includes synthetic data generators, counterfactual model backtesting and
+evaluation, validation checks against common data issues, and a standalone 
+dashboard app for easy report generation.
 
 ## Method
 
@@ -18,7 +23,7 @@ would have been inside each declared treatment window. The gap between actual
 and counterfactual is the lift; window-level lift ratios are aggregated and a
 percentile bootstrap over those windows gives the interval.
 
-Two things the design takes seriously:
+Two design decisions:
 
 - **Sign convention is explicit.** Whether the baseline period is
   treatment-*on* (e.g. a paid-media pause) or treatment-*off* (e.g. a pulse-on
