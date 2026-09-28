@@ -89,11 +89,8 @@ import matplotlib.ticker as mticker
 from matplotlib import transforms
 import pandas as pd
 
-from arjentic.incrementality import BaselineState, RunConfig, generate, run
-from arjentic.incrementality.contracts import Role, validate
-from arjentic.incrementality.diagnostics import backtest
-from arjentic.incrementality.estimate import label_roles
-from arjentic.incrementality.models import get_model
+from arjentic.incrementality import BaselineState, RunConfig, backtest, generate, run
+from arjentic.incrementality.contracts import validate
 
 pd.set_option("display.float_format", "{:,.4f}".format)
 
@@ -264,22 +261,17 @@ config
 # Notice that washout only gets handled once — every bucket gets tagged with a role
 # up front, and everything downstream just filters on it. The model fits on
 # `baseline`, the estimator scores `window`, and `washout` buckets are simply never
-# selected by either step. Nobody downstream has to remember washout exists.
+# selected by either step. Nobody downstream has to remember washout exists. The
+# result carries that labeled series, so we can count the roles straight off it.
 
 # %%
-labeled = label_roles(
-    observations,
-    treatment_windows,
-    washout_before=config.washout_before,
-    washout_after=config.washout_after,
-)
-labeled["role"].value_counts().rename("buckets").to_frame()
+result = run(df, windows, config)
+result.series["role"].value_counts().rename("buckets").to_frame()
 
 # %% [markdown]
 # ## 3. Results
 
 # %%
-result = run(df, windows, config)
 result.per_window
 
 # %% [markdown]
@@ -360,31 +352,28 @@ fig.tight_layout()
 # %%
 # todo: adapt for dashboard, allow interactive selection of windows
 
+# The result already carries the counterfactual on every bucket, so showing a
+# window in context is a slice rather than a refit.
 window = treatment_windows.iloc[1]
-scored = labeled[labeled["window_id"] == window["window_id"]]
-
-model = get_model(config.primary_model, **config.model_params)
-model.fit(labeled[labeled["role"] == Role.BASELINE])
-
-context = labeled[
-    (labeled["timestamp"] >= window["start"] - pd.Timedelta(hours=18))
-    & (labeled["timestamp"] <= window["end"] + pd.Timedelta(hours=18))
+series = result.series
+context = series[
+    (series["timestamp"] >= window["start"] - pd.Timedelta(hours=18))
+    & (series["timestamp"] <= window["end"] + pd.Timedelta(hours=18))
 ]
-forecast = model.predict(context["timestamp"])
 
 fig, ax = plt.subplots(figsize=(11, 3.8))
 ax.fill_between(
-    forecast["timestamp"],
-    forecast["lower"],
-    forecast["upper"],
+    context["timestamp"],
+    context["lower"],
+    context["upper"],
     color=COUNTERFACTUAL,
     alpha=0.15,
     linewidth=0,
     label="counterfactual 95% interval",
 )
 ax.plot(
-    forecast["timestamp"],
-    forecast["expected"],
+    context["timestamp"],
+    context["counterfactual"],
     color=COUNTERFACTUAL,
     linestyle=(0, (4, 3)),
     label="counterfactual",
@@ -474,6 +463,14 @@ pd.DataFrame(comparison).set_index("model")
 # out wider, and that's honest: its per-window counterfactuals disagree with each
 # other more than the naive model's do, and resampling across windows is exactly what
 # surfaces that disagreement.
+#
+# Look closely at the naive row, though: its interval is so tight it *misses* the
+# planted 20%. The point estimate is close, but the interval claims more certainty
+# than four windows can support. That isn't a fluke of this dataset — across twenty
+# seeds the naive interval misses truth about three times in twenty and Prophet's about
+# five, against the one-in-twenty a 95% interval promises. The Notes section below
+# comes back to this; the short version is to trust the point estimates here more than
+# the interval edges.
 
 # %% [markdown]
 # ## 5. Business Impacts

@@ -50,7 +50,7 @@ def generate(
 
     value = baseline_level * trend * weekly * daily * noise
 
-    windows = _place_windows(timestamps, n_windows, window_duration_buckets)
+    windows = _place_windows(timestamps, n_windows, window_duration_buckets, rng)
 
     window_mask = np.zeros(n_buckets, dtype=bool)
     for start, end in zip(windows["start"], windows["end"]):
@@ -65,23 +65,38 @@ def generate(
 
 
 def _place_windows(
-    timestamps: pd.DatetimeIndex, n_windows: int, window_duration_buckets: int
+    timestamps: pd.DatetimeIndex,
+    n_windows: int,
+    window_duration_buckets: int,
+    rng: np.random.Generator,
 ) -> pd.DataFrame:
-    """Evenly space non-overlapping windows, clear of the series edges."""
+    """Place non-overlapping windows at seed-driven positions, clear of the edges.
+
+    Stratified: the usable span is cut into one slot per window, and each window
+    lands at a random offset inside its slot. Where a window falls against the
+    daily and weekly cycle is the dominant source of estimation error, so the
+    seed has to move it -- fixed positions would let a many-seed test vary only
+    the noise. Even spacing would also cancel a linear trend's bias across
+    windows by symmetry and hide it.
+
+    The central half of each slot's free space is eligible, so neighbouring
+    windows keep a gap of at least half a slot's slack between them.
+    """
     n_buckets = len(timestamps)
     edge_buffer = n_buckets // 10
     usable_span = n_buckets - 2 * edge_buffer
 
-    total_window_buckets = n_windows * window_duration_buckets
-    if total_window_buckets >= usable_span:
+    slot = usable_span // n_windows
+    slack = slot - window_duration_buckets
+    if slack <= 0:
         raise ValueError("n_windows * window_duration_buckets too large for n_days")
 
-    gap = (usable_span - total_window_buckets) // (n_windows + 1)
+    margin = slack // 4
+    offsets = rng.integers(margin, slack - margin + 1, size=n_windows)
 
     rows = []
-    cursor = edge_buffer + gap
-    for i in range(n_windows):
-        start_idx = cursor
+    for i, offset in enumerate(offsets):
+        start_idx = edge_buffer + i * slot + int(offset)
         end_idx = start_idx + window_duration_buckets
         rows.append(
             {
@@ -90,6 +105,5 @@ def _place_windows(
                 "end": timestamps[end_idx],
             }
         )
-        cursor = end_idx + gap
 
     return pd.DataFrame(rows)

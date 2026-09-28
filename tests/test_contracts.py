@@ -276,6 +276,7 @@ def test_estimate_result_comparison_does_not_raise_on_its_frame() -> None:
         ci_method="bootstrap",
         model_name="naive",
         config=config,
+        series=pd.DataFrame({"value": [1.0]}),
     )
 
     assert result == result

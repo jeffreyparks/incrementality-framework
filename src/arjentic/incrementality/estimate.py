@@ -28,33 +28,20 @@ def run(df: pd.DataFrame, windows: pd.DataFrame, config: RunConfig) -> EstimateR
     Fits the counterfactual model on every baseline bucket -- not a pre-period
     only -- and scores the buckets inside each declared window.
     """
-    observations, treatment_windows = validate(df, windows)
-
-    available = observations["unit_id"].unique()
-    if config.unit_id not in set(available):
-        raise ValueError(
-            f"unit_id {config.unit_id!r} is not present in the observations; "
-            f"available units: {sorted(available)}"
-        )
-    observations = observations[observations["unit_id"] == config.unit_id]
-
-    labeled = label_roles(
-        observations,
-        treatment_windows,
-        washout_before=config.washout_before,
-        washout_after=config.washout_after,
-    )
+    labeled = prepare(df, windows, config)
 
     model = get_model(config.primary_model, **config.model_params)
     model.fit(labeled[labeled["role"] == Role.BASELINE])
 
-    scored = labeled[labeled["role"] == Role.WINDOW].reset_index(drop=True)
-    forecast = model.predict(scored["timestamp"])
-    scored = scored.assign(
+    # Every bucket is scored, not only window buckets, so the result can show
+    # the counterfactual in context without the caller refitting the model.
+    forecast = model.predict(labeled["timestamp"])
+    series = labeled.assign(
         counterfactual=forecast["expected"].to_numpy(),
         lower=forecast["lower"].to_numpy(),
         upper=forecast["upper"].to_numpy(),
     )
+    scored = series[series["role"] == Role.WINDOW].reset_index(drop=True)
 
     per_window = _per_window_lift(scored, config.baseline_state)
 
@@ -78,6 +65,31 @@ def run(df: pd.DataFrame, windows: pd.DataFrame, config: RunConfig) -> EstimateR
         ci_method=ci_method,
         model_name=config.primary_model,
         config=config,
+        series=series,
+    )
+
+
+def prepare(df: pd.DataFrame, windows: pd.DataFrame, config: RunConfig) -> pd.DataFrame:
+    """Validate, select the configured unit, and label every bucket's role.
+
+    The shared front half of `run()` and `diagnostics.backtest()`, so the two
+    cannot drift apart on which buckets count as baseline.
+    """
+    observations, treatment_windows = validate(df, windows)
+
+    available = observations["unit_id"].unique()
+    if config.unit_id not in set(available):
+        raise ValueError(
+            f"unit_id {config.unit_id!r} is not present in the observations; "
+            f"available units: {sorted(available)}"
+        )
+    observations = observations[observations["unit_id"] == config.unit_id]
+
+    return label_roles(
+        observations,
+        treatment_windows,
+        washout_before=config.washout_before,
+        washout_after=config.washout_after,
     )
 
 

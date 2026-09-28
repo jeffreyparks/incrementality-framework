@@ -139,6 +139,15 @@ class EstimateResult:
     model_name: str
     config: RunConfig
 
+    series: pd.DataFrame
+    """The unit's full labeled series with the counterfactual on every bucket.
+
+    Observation columns plus `role`, `window_id`, `counterfactual`, `lower`
+    and `upper`. Baseline buckets carry in-sample fits and washout buckets
+    carry predictions, so a window can be shown in context without refitting.
+    Only `role == window` rows enter the estimate.
+    """
+
 
 def validate(
     observations: pd.DataFrame, windows: pd.DataFrame

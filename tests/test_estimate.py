@@ -202,12 +202,15 @@ def test_run_reports_both_aggregations(observations) -> None:
     assert result.ci_lower < result.pooled_lift < result.ci_upper
 
 
-def test_run_recovers_the_planted_effect_within_the_interval() -> None:
-    df, windows, truth = generate(n_days=45)
+def test_run_interval_brackets_its_own_pooled_estimate() -> None:
+    """Recovery of the truth is test_recovery.py's job; this pins that the
+    bootstrap is resampling the statistic it reports."""
+    df, windows, _ = generate(n_days=45)
 
     result = run(df, windows, _config())
 
-    assert result.ci_lower <= truth["effect_size"] <= result.ci_upper
+    assert result.ci_method == "bootstrap"
+    assert result.ci_lower <= result.pooled_lift <= result.ci_upper
 
 
 def test_run_rejects_an_unknown_unit() -> None:
@@ -297,4 +300,24 @@ def test_bootstrap_interval_widens_with_heterogeneous_windows() -> None:
 def test_public_surface_is_exactly_what_was_declared() -> None:
     import arjentic.incrementality as package
 
-    assert set(package.__all__) == {"BaselineState", "RunConfig", "generate", "run"}
+    assert set(package.__all__) == {
+        "BaselineState",
+        "RunConfig",
+        "backtest",
+        "generate",
+        "run",
+    }
+
+
+def test_result_series_scores_every_bucket_and_matches_the_estimate() -> None:
+    """The series is for display, so it must agree with what was estimated."""
+    df, windows, _ = generate(n_days=30, n_windows=2)
+
+    result = run(df, windows, _config())
+
+    assert len(result.series) == len(df)
+    assert not result.series["counterfactual"].isna().any()
+    in_windows = result.series[result.series["role"] == Role.WINDOW]
+    assert in_windows["counterfactual"].sum() == pytest.approx(
+        result.per_window["counterfactual"].sum()
+    )

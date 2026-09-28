@@ -1,12 +1,13 @@
 # arjentic-incrementality
 
-A reusable incrementality testing harness for variety of experiment designs,
-including single and multi-unit holdout, donors and geo-holdout with a range 
-of time-series counterfactual forecasting backends.  
+A reusable incrementality testing harness for pulse and holdout experiments,
+built on time-series counterfactual forecasting behind a pluggable model
+interface (Prophet by default).
 
-Includes synthetic data generators, counterfactual model backtesting and
-evaluation, validation checks against common data issues, and a standalone 
-dashboard app for easy report generation.
+v0.1 covers a single treated unit with multiple treatment windows: a synthetic
+dataset with a known planted effect, the estimator, and a counterfactual-model
+backtest. Multi-unit and donor designs, geo holdouts, input data-quality checks
+and a reporting dashboard are on the roadmap, not in this release.
 
 ## Method
 
@@ -55,9 +56,11 @@ A single treated unit, multiple treatment windows, backtest validation only.
   known answer rather than a plausible-looking one.
 - `notebooks/01-single-unit-demo.ipynb` — the end-to-end walkthrough: generate,
   estimate, backtest, and a business-metric translation.
-- 115 passing tests, including `tests/test_recovery.py` — the harness recovers
-  the planted effect, on both backends, within its reported interval. That
-  test is this project's definition of done.
+- `tests/test_recovery.py` — the definition of done. Across 20 seeds, which
+  move window placement as well as noise, both backends recover the planted
+  effect without bias. The percentile bootstrap interval contains the truth on
+  15–17 of 20 seeds against a nominal 95%, so it under-covers; read it as
+  indicative. The measured figures are recorded in the test module.
 
 ## Install
 
@@ -68,7 +71,7 @@ uv sync
 ## Quickstart
 
 ```python
-from arjentic.incrementality import BaselineState, RunConfig, generate, run
+from arjentic.incrementality import BaselineState, RunConfig, backtest, generate, run
 
 df, windows, truth = generate(effect_size=0.20)
 
@@ -82,13 +85,17 @@ config = RunConfig(
 )
 
 result = run(df, windows, config)
+diagnostic = backtest(df, windows, config)
 ```
 
 `df` holds `unit_id`, `timestamp` (UTC) and `value`; `windows` holds
 `window_id`, `start` and `end` as half-open intervals; `truth` carries the
 planted effect so a run can be scored against it. `result` is self-describing:
 it carries `pooled_lift`, `mean_of_ratios_lift`, a confidence interval with the
-method that produced it (`ci_method`), and the `config` that produced the run.
+method that produced it (`ci_method`), the full `series` with the
+counterfactual on every bucket, and the `config` that produced the run.
+`diagnostic` reports how well the model predicts baseline buckets it has not
+seen: interval coverage, MAE and bias.
 
 ## Development
 

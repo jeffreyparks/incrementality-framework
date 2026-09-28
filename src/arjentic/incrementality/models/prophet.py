@@ -8,16 +8,18 @@ file should need to know Prophet is what produced a forecast.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-from prophet import Prophet
 
 from arjentic.incrementality.models.base import (
     INTERVAL_WIDTH,
     forecast_frame,
     require_sorted,
 )
+
+if TYPE_CHECKING:
+    from prophet import Prophet
 
 
 class ProphetForecaster:
@@ -33,6 +35,11 @@ class ProphetForecaster:
         self._model: Prophet | None = None
 
     def fit(self, history: pd.DataFrame) -> None:
+        # Imported here rather than at module level: the registry names this
+        # class, so a top-level import would load Prophet and its sampler for
+        # every user of the package, including naive-only runs.
+        from prophet import Prophet
+
         # A fitted Prophet cannot be refit, so each call gets a fresh instance.
         self._model = Prophet(**self._params)
         self._model.fit(

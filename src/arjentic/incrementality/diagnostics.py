@@ -18,8 +18,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from arjentic.incrementality.contracts import Role, RunConfig, validate
-from arjentic.incrementality.estimate import label_roles
+from arjentic.incrementality.contracts import Role, RunConfig
+from arjentic.incrementality.estimate import prepare
 from arjentic.incrementality.models import get_model
 from arjentic.incrementality.models.base import INTERVAL_WIDTH
 
@@ -70,22 +70,7 @@ def backtest(
     One fold, deliberately. Rolling-origin is a later upgrade behind this same
     signature.
     """
-    observations, treatment_windows = validate(df, windows)
-
-    available = observations["unit_id"].unique()
-    if config.unit_id not in set(available):
-        raise ValueError(
-            f"unit_id {config.unit_id!r} is not present in the observations; "
-            f"available units: {sorted(available)}"
-        )
-    observations = observations[observations["unit_id"] == config.unit_id]
-
-    labeled = label_roles(
-        observations,
-        treatment_windows,
-        washout_before=config.washout_before,
-        washout_after=config.washout_after,
-    )
+    labeled = prepare(df, windows, config)
     baseline = labeled[labeled["role"] == Role.BASELINE].reset_index(drop=True)
 
     n_holdout = config.backtest_holdout_buckets

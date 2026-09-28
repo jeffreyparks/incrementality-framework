@@ -88,3 +88,13 @@ def test_seed_actually_drives_the_noise() -> None:
     second, _, _ = generate(seed=2)
 
     assert not first["value"].equals(second["value"])
+
+
+def test_seed_moves_the_windows_against_the_seasonal_cycle() -> None:
+    """Placement against the daily cycle is the dominant error source, so a
+    many-seed test is only meaningful if the seed moves it."""
+    hours = {
+        tuple(generate(seed=seed)[1]["start"].dt.hour) for seed in range(10)
+    }
+
+    assert len(hours) > 1

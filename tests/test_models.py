@@ -263,3 +263,17 @@ def test_prophet_vocabulary_stays_inside_its_adapter() -> None:
 
 def _seasonal_slot(timestamps: pd.Series) -> pd.Series:
     return timestamps.dt.dayofweek * 24 + timestamps.dt.hour
+
+
+def test_importing_the_package_does_not_load_prophet() -> None:
+    """Naive-only users should not pay for Prophet's import and sampler.
+    Checked in a fresh interpreter, since this test session has already
+    imported it."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, arjentic.incrementality; "
+        "sys.exit('prophet' in sys.modules)"
+    )
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 0
